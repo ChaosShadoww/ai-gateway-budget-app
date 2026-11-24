@@ -1,11 +1,4 @@
-"""Private LLM gateway: one endpoint in front of the local model.
-
-- POST /v1/chat   chat with the local model; optional JSON-schema-enforced output with retries
-- GET  /health    is the gateway up, and can it reach Ollama?
-- GET  /stats     latency percentiles, success and retry rates from the request log
-
-Privacy: the log stores timing and token counts only, never prompt or answer text.
-"""
+import hmac
 import json
 import os
 import sqlite3
@@ -17,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 from pydantic import BaseModel, Field
 
@@ -27,6 +20,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/gateway.db")
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "30"))
 OLLAMA_TIMEOUT_S = float(os.getenv("OLLAMA_TIMEOUT_S", "300"))
+GATEWAY_API_KEY = os.getenv("GATEWAY_API_KEY", "")
 NS = 1e9  # Ollama reports durations in nanoseconds
 
 
@@ -41,7 +35,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     json_schema: Optional[dict[str, Any]] = None  # if set, the reply must be JSON matching it
     max_tokens: int = Field(default=256, ge=1, le=2048)
-    private: bool = True  # private requests never leave this machine
+    private: bool = True  # private requests always run on the local model
 
 
 class ChatResponse(BaseModel):
@@ -80,6 +74,8 @@ def log_request(route, model, ok, attempts, t, error=None):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if len(GATEWAY_API_KEY) < 32 or GATEWAY_API_KEY.startswith("change-me"):
+        raise RuntimeError("GATEWAY_API_KEY is missing, too short, or still the placeholder. Set it in .env.")
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     db().close()
     app.state.http = httpx.AsyncClient(base_url=OLLAMA_URL, timeout=OLLAMA_TIMEOUT_S)
@@ -89,6 +85,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Private LLM Gateway", lifespan=lifespan)
 
+# ---------- authentication ----------
+def require_api_key(authorization: str = Header(default="")):
+    expected = f"Bearer {GATEWAY_API_KEY}"
+    if not hmac.compare_digest(authorization.encode(), expected.encode()):
+        raise HTTPException(401, "Missing or invalid API key.", headers={"WWW-Authenticate": "Bearer"})
 
 # ---------- rate limiting (sliding window per client) ----------
 _hits: dict[str, deque] = defaultdict(deque)
@@ -136,7 +137,7 @@ async def call_ollama(model: str, messages: list[dict], schema: Optional[dict], 
 
 
 # ---------- endpoints ----------
-@app.post("/v1/chat", response_model=ChatResponse)
+@app.post("/v1/chat", response_model=ChatResponse, dependencies=[Depends(require_api_key)])
 async def chat(req: ChatRequest, request: Request):
     check_rate_limit(request.client.host if request.client else "unknown")
     route = choose_route(req)
@@ -209,7 +210,7 @@ async def health():
     return {"status": "ok", "ollama": True, "default_model": DEFAULT_MODEL, "models": models}
 
 
-@app.get("/stats")
+@app.get("/stats", dependencies=[Depends(require_api_key)])
 def stats(last: int = 500):
     with db() as conn:
         rows = conn.execute(

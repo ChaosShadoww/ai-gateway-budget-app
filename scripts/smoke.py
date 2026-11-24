@@ -1,16 +1,20 @@
-"""Smoke test for the gateway. Run from C:\\ai-gateway:  py scripts\\smoke.py"""
 import json
 import urllib.error
 import urllib.request
+import os
+from pathlib import Path
 
 BASE = "http://127.0.0.1:8000"
 CATEGORIES = ["Food", "Groceries", "Transport", "Housing", "Shopping", "Bills", "Entertainment", "Other"]
+KEY = os.getenv("GATEWAY_API_KEY") or next(
+    (line.split("=", 1)[1].strip() for line in Path(".env").read_text().splitlines()
+     if line.startswith("GATEWAY_API_KEY=")), "")
 
 
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
     try:
         with urllib.request.urlopen(req, timeout=600) as r:
             return r.status, json.loads(r.read())

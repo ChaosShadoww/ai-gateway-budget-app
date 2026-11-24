@@ -21,6 +21,7 @@ services:
       - DB_PATH=/data/gateway.db
       - MAX_RETRIES=2
       - RATE_LIMIT_PER_MIN=30
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY:?Set GATEWAY_API_KEY in .env}
     volumes:
       - gateway-data:/data
     depends_on:
