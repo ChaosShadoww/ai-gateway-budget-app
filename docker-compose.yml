@@ -1,0 +1,32 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    restart: unless-stopped
+
+  gateway:
+    build: ./gateway
+    container_name: gateway
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - DEFAULT_MODEL=llama3.2:3b
+      - DB_PATH=/data/gateway.db
+      - MAX_RETRIES=2
+      - RATE_LIMIT_PER_MIN=30
+    volumes:
+      - gateway-data:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  gateway-data:
